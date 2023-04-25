@@ -1,5 +1,5 @@
 %% RLS Cornering Stiffness Estimator with Forgetting Factor 
-function rls_cs = cornStiff(steer_ang, Vx, Vy, r, Ay, hitch, hitch_rate, x, P)
+function rls_cs = cornStiff(ts_data, trunc_axle)
 % Author: 
 %           Tahn Thawainin, AU GAVLAB
 %
@@ -8,68 +8,246 @@ function rls_cs = cornStiff(steer_ang, Vx, Vy, r, Ay, hitch, hitch_rate, x, P)
 %           5-axle tractor using a LS/RLS with forgetting factor
 %
 % Inputs: 
-%           steer_ang - steer angle at front axle (rad)
-%           VH - longitudinal velocity (m/s)
-%           Vy - lateral velocity (m/s)
-%           r - yaw rate (rad/s)
-%           Ay - lateral acceleration (m/s^2)
-%           hitch - hitch angle (rad)
-%           hitch_rate - hitch rate (rad/s)
-%           phi_init - initalized state matriHconfig
-%           P_init - initalized covariance matriH
-%
+%           data - TruckSim data set (struct)
 % Outputs: 
 %           rls_cs - Cornering stiffness estimator data set (SI)
 
+%% Load TruckSim Data
+
+% simulation time
+t_sim = ts_data.T_Event;
+
+% average L1 and R1 steer angles(rad)
+steer_ang = deg2rad((ts_data.Steer_L1 + ts_data.Steer_R1)/2);
+
+% longitudinal velocity (m/s)
+Vx = ts_data.Vx*(1e3/3600);
+% Vx = 19.44*ones(size(t_sim));
+
+% lateral velocity (m/s)
+Vy = ts_data.Vy*(1e3/3600);
+
+% yaw (rad)
+yaw = deg2rad(ts_data.Yaw);
+
+% yaw rate (rad/s)
+yaw_rate = deg2rad(ts_data.AVz);
+
+% hitch (rad)
+hitch = deg2rad(ts_data.Art_H);
+
+% hitch rated (rad/s)
+hitch_rate = deg2rad(ts_data.ArtR_H);
+
+% axle slip angles (rad)
+sa1 = -deg2rad((ts_data.AlphaL1i + ts_data.AlphaR1i)./2);
+sa2 = -deg2rad((ts_data.AlphaL2i + ts_data.AlphaR2i)./2);
+sa3 = -deg2rad((ts_data.AlphaL3i + ts_data.AlphaR3i)./2);
+sa4 = -deg2rad((ts_data.AlphaL4i + ts_data.AlphaR4i)./2);
+sa5 = -deg2rad((ts_data.AlphaL5i + ts_data.AlphaR5i)./2);
+
+% truncated slip angles (rad)
+sa23 = (sa2 + sa3)./2;
+sa45 = (sa4 + sa5)./2;
+
 %% Vehicle Parameters
 vp = vehParams();
+
+%% Measurement from TruckSim
+
+% measurment noise condition
+% 0 - no added noise
+% 1 - add measurement noise
+meas_noise = 0;
+
+if meas_noise == 0
+
+    % lateral acceleration (m/s^2) - for cornering stiffness RLS
+    Ay = 9.81*ts_data.Ay;
+
+elseif meas_noise == 1
+    
+    % lat accel measurement noise STD
+    sigma_Ay = 0.01;
+
+    % lateral acceleration (m/s^2) - for cornering stiffness RLS
+    Ay = 9.81*ts_data.Ay + sigma_Ay*randn(1,length(t_sim));
+
+end
 
 %% RLS
 
 % forgetting factor
 lambda = 0.999;
 
-% measurements
-y = Ay;
 
-% scaling vector
-H = (1/(vp.m_t1 + vp.m_t2)).*[steer_ang*cos(steer_ang) - cos(steer_ang)*((Vy + vp.a*r)/Vx),...
-                              (-Vy + vp.b1*r)/Vx,...
-                              (-Vy + vp.b2*r)/Vx,...
-                              ((-cos(hitch)*Vy + cos(hitch)*(vp.c + vp.f1*cos(hitch))*r + cos(hitch)^2*vp.f1*hitch_rate)/Vx) + hitch*cos(hitch), ...
-                              ((-cos(hitch)*Vy + cos(hitch)*(vp.c + vp.f2*cos(hitch))*r + cos(hitch)^2*vp.f2*hitch_rate)/Vx) + hitch*cos(hitch)];
+% initialize
+if trunc_axle == 0
+x_init =  [1e4;
+           1e4;
+           1e4;
+           1e4;
+           1e4];
 
-% update gain matrix
-rls_cs.L = P*H'/(lambda + H*P*H');
+P_init = [10000, 0, 0, 0, 0;...
+          0, 10000, 0, 0, 0;...
+          0, 0, 10000, 0, 0;...
+          0, 0, 0, 10000, 0;...
+          0, 0, 0, 0, 10000];
 
-% update states
-rls_cs.innov = (y - H*x);
-x = x + rls_cs.L*(rls_cs.innov);
+elseif trunc_axle == 1
 
-% Update covariance matrix
-rls_cs.P = (eye(5) - rls_cs.L*H)*P*(1/lambda);
+% initialize
+x_init =  [1e4;...
+           1e4;...
+           1e4];
 
-% %     direct least squares
-%     innov = 1;
-%     while abs(innov) > 0.1
-% 
-% %     update gain matrix
-%     L = P*H'./(lambda + H*P*H');
-% 
-% %     update states
-%     innov = (y - H*phi);
-%     x= x+ pinv(H)*innov;
-%     
-% %     Update covariance matrix
-%     P = (eye(5) - L*H)*P*(1/lambda);
+P_init = [10000, 0, 0;...
+          0, 10000, 0;...
+          0, 0, 10000];...
+end
 
-%     end
+x = x_init;
+P = P_init;
 
-% Cornering stiffnesses 
-rls_cs.C1 = x(1); 
-rls_cs.C2 = x(2);
-rls_cs.C3 = x(3);
-rls_cs.C4 = x(4);
-rls_cs.C5 = x(5);
+% RLS
+for i = 1:length(t_sim)
+    
+    if trunc_axle == 0
 
+        % measurements
+        y = (vp.m_t1 + vp.m_t2)*Ay(i);
+
+        % scaling vector
+        H = [steer_ang(i)*cos(steer_ang(i)) - cos(steer_ang(i))*((Vy(i) + vp.a*yaw_rate(i))/Vx(i)),...
+             (-Vy(i) + vp.b1*yaw_rate(i))/Vx(i),...
+             (-Vy(i) + vp.b2*yaw_rate(i))/Vx(i),...
+             ((-cos(hitch(i))*Vy(i) + cos(hitch(i))*(vp.c + vp.f1*cos(hitch(i)))*yaw_rate(i) ...
+                 + cos(hitch(i))^2*vp.f1*hitch_rate(i))/Vx(i)) + hitch(i)*cos(hitch(i)), ...
+             ((-cos(hitch(i))*Vy(i) + cos(hitch(i))*(vp.c + vp.f2*cos(hitch(i)))*yaw_rate(i)...
+                 + cos(hitch(i))^2*vp.f2*hitch_rate(i))/Vx(i)) + hitch(i)*cos(hitch(i))];
+        
+%         % TRUCKSIM SLIP ANGLES
+%         H = [sa1(i), sa2(i), sa3(i), sa4(i), sa5(i)];
+
+        % update gain matrix
+        L = P*H'/(lambda + H*P*H');
+        
+        % update states
+        innov = (y - H*x);
+        x = x + L*(innov);
+        
+        % Update covariance matrix
+        P = (eye(5) - L*H)*P*(1/lambda);
+        
+        %   direct least squares-------------------------------------------
+        %     innov = 1;
+        %     while abs(innov) > 0.1
+        % 
+        % %     update gain matrix
+        %     L = P*H'./(lambda + H*P*H');
+        % 
+        % %     update states
+        %     innov = (y - H*phi);
+        %     x= x + pinv(H)*innov;
+        
+        %     end
+        
+        % siphon variables-------------------------------------------------
+        
+        % Cornering stiffnesses 
+        rls_cs(i).C1 = x(1); 
+        rls_cs(i).C2 = x(2);
+        rls_cs(i).C3 = x(3);
+        rls_cs(i).C4 = x(4);
+        rls_cs(i).C5 = x(5);
+        
+        % slip angles
+        rls_cs(i).sa1 = H(1);
+        rls_cs(i).sa2 = H(2);
+        rls_cs(i).sa3 = H(3);
+        rls_cs(i).sa4 = H(4);
+        rls_cs(i).sa5 = H(5);
+
+        % gain
+        rls_cs(i).L1 = L(1);
+        rls_cs(i).L2 = L(2);
+        rls_cs(i).L3 = L(3);
+        rls_cs(i).L4 = L(4);
+        rls_cs(i).L5 = L(5);
+
+        % innovation
+        rls_cs(i).innov = innov;
+
+        % covariance
+        rls_cs(i).P = P;
+
+    elseif trunc_axle == 1
+
+        % measurements
+        y = (vp.m_t1 + vp.m_t2)*Ay(i);
+
+        % truncated distances
+        b_trunc = vp.b1 + (vp.b2-vp.b1)/2;
+        f_trunc = vp.f1 + (vp.f2-vp.f1)/2;
+        
+        % truncated observation matrix
+        H = [steer_ang(i)*cos(steer_ang(i)) - cos(steer_ang(i))*((Vy(i)+vp.a*yaw_rate(i))/Vx(i)),...
+             (-Vy(i) + b_trunc*yaw_rate(i))/Vx(i),...
+             (-cos(hitch(i))*Vy(i) + cos(hitch(i))*(vp.c + f_trunc*cos(hitch(i)))*yaw_rate(i)...
+             + cos(hitch(i))^2*f_trunc*hitch_rate(i))/Vx(i) + hitch(i)*cos(hitch(i))]; ...
+
+%         TRUCKSIM SLIP ANGLES
+%         H = [sa1(i), sa23(i), sa45(i)];
+
+        % update gain matrix
+        L = P*H'/(lambda + H*P*H');
+        
+        % update states
+        innov = (y - H*x);
+        x = x + L*(innov);
+        
+        % Update covariance matrix
+        P = (eye(3) - L*H)*P*(1/lambda);
+        
+        %   direct least squares-------------------------------------------
+        %     innov = 1;
+        %     while abs(innov) > 0.1
+        % 
+        % %     update gain matrix
+        %     L = P*H'./(lambda + H*P*H');
+        % 
+        % %     update states
+        %     innov = (y - H*phi);
+        %     x= x + pinv(H)*innov;
+        %     
+        % %     Update covariance matrix
+        %     P = (eye(3) - L*H)*P*(1/lambda);
+        
+        %     end
+        
+        % siphon variables-------------------------------------------------
+
+        % Cornering stiffnesses 
+        rls_cs(i).C1 = x(1); 
+        rls_cs(i).C2 = x(2);
+        rls_cs(i).C3 = x(3);
+
+        % slip angles
+        rls_cs(i).sa1 = H(1);
+        rls_cs(i).sa2 = H(2);
+        rls_cs(i).sa3 = H(3);
+
+        % gain
+        rls_cs(i).L1 = L(1);
+        rls_cs(i).L2 = L(2);
+        rls_cs(i).L3 = L(3);
+
+        % innovation
+        rls_cs(i).innov = innov;
+
+        % covariance
+        rls_cs(i).P = P;
+    end
+end
 end

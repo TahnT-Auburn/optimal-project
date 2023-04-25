@@ -94,7 +94,7 @@ Fz_vs_Fy = ltm.tm_array(1:end,2:end);
     
     % effective axle cornering stiffness
     ltm.A1_cs = 2*ltm.tire1_cs;
-    ltm.A2_cs = 2*ltm.tire2_cs;
-    ltm.A3_cs = 2*ltm.tire3_cs;
+    ltm.A23_cs = 2*ltm.tire2_cs;
+    ltm.A45_cs = 2*ltm.tire3_cs;
 
 end
