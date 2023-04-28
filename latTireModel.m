@@ -48,7 +48,7 @@ Fz_vs_Fy = ltm.tm_array(1:end,2:end);
                    ((Fz_vs_Fy(i+1,up_lim) - Fz_vs_Fy(i+1,low_lim))/...
                    (ltm.Fz(up_lim) - ltm.Fz(low_lim)));
 
-        % 2nd and 3rd tire cure--------------------------------------------
+        % 2nd and 3rd tire curve--------------------------------------------
 
         % lower limit
         low_lim = find(ltm.Fz < vert_load(2));

@@ -13,7 +13,7 @@ close all
 %% Load Data
 
 % TruckSim data set
-ts_data = load('Run107_multi_dblc0.mat');
+ts_data = load('Run113_single_dblc0.mat');
 
 %% Vehicle Parameters
 vp = vehParams();
@@ -30,7 +30,10 @@ t_sim = ts_data.T_Event;
 
 % average L1 and R1 steer angles(rad)
 steer_ang = deg2rad((ts_data.Steer_L1 + ts_data.Steer_R1)/2);
-steer_ang(1:100) = 0;
+% steer_ang(1:100) = 0;
+
+% steer ang test
+steer_ang_test = deg2rad(5);
 
 % longitudinal velocity (m/s)
 Vx = ts_data.Vx*(1e3/3600);
@@ -38,17 +41,41 @@ Vx = ts_data.Vx*(1e3/3600);
 % lateral velocity (m/s)
 Vy = ts_data.Vy*(1e3/3600);
 
+% lateral acceleration tractor
+Ay = 9.81*ts_data.Ay;
+
 % yaw (rad)
 yaw = deg2rad(ts_data.Yaw);
 
 % yaw rate (rad/s)
 yaw_rate = deg2rad(ts_data.AVz);
 
+% derive yaw accel (rad/s^2)
+yaw_accel(1) = 0;
+for i = 2:length(t_sim)
+    yaw_accel(i) = (yaw_rate(i) - yaw_rate(i-1))/dt;
+end
+
 % hitch (rad)
 hitch = deg2rad(ts_data.Art_H);
 
 % hitch rated (rad/s)
 hitch_rate = deg2rad(ts_data.ArtR_H);
+
+% derive hitch accel (rad/s^2) 
+hitch_accel(1) = 0;
+for i = 2:length(t_sim)
+    hitch_accel(i) = (hitch_rate(i) - hitch_rate(i-1))/dt;
+end
+
+% transients
+for i = 1:length(t_sim)
+    t1(i) = (-vp.m_t2*yaw_accel(i)*(vp.c + vp.d*cos(hitch(i))))/(vp.m_t1 + vp.m_t2);
+    t2(i) = (-vp.m_t2*hitch_accel(i)*vp.d*cos(hitch(i)))/(vp.m_t1 + vp.m_t2);
+end
+
+% total acceleration
+Ay_tot = Ay + t1' + t2';
 
 % X global position
 Xo = ts_data.Xo;
@@ -81,16 +108,80 @@ sa5 = -deg2rad((ts_data.AlphaL5i + ts_data.AlphaR5i)./2);
 sa23 = (sa2 + sa3)./2;
 sa45 = (sa4 + sa5)./2;
 
+%% Open-Loop Dynamic Model Simulation
+
+% initialize states
+Vy_ol = 0;
+yaw_rate_ol = 0;
+yaw_ol = 0;
+hitch_rate_ol = 0;
+hitch_ol = 0;
+
+% initialize position
+pos_X_ol = 0;
+pos_Y_ol = 0;
+
+x_init = [Vy_ol;
+          yaw_rate_ol;
+          yaw_ol;
+          hitch_rate_ol;
+          hitch_ol];
+
+x = x_init;
+
+% tire stiffness values
+% CS = [ltm.A1_cs, ltm.A23_cs, ltm.A23_cs, ltm.A45_cs, ltm.A45_cs]; % truth?
+CS = [4.5e5, 2.5e5, 2.5e5, 1.6e5, 1.6e5];
+Vx_const = 25;
+
+for i = 1:length(t_sim)
+
+% input
+u = steer_ang(i);
+
+% update dynamics
+lat_ol(i) = latModel(steer_ang(i), Vx(i), dt, CS);
+
+% simulate dynamics
+xd = lat_ol(i).sysc.A*x + lat_ol(i).sysc.B*u;
+
+% update states
+x = x + xd.*dt;
+
+% position integration
+pos_X_ol = pos_X_ol + (Vx(i)*cos(x(3)) - x(1)*sin(x(3)))*dt;
+pos_Y_ol = pos_Y_ol + (Vx(i)*sin(x(3)) + x(1)*cos(x(3)))*dt;
+
+% siphon variables---------------------------------------------------------
+
+% state derivatives
+x_derv(:,i) = xd;
+
+% state estimates
+Vy_ol(i,:) = x(1);
+yaw_rate_ol(i,:) = x(2);
+yaw_ol(i,:) = x(3);
+hitch_rate_ol(i,:) = x(4);
+hitch_ol(i,:) = x(5);
+
+% position 
+pos_X_ol_est(i,:) = pos_X_ol;
+pos_Y_ol_est(i, :) = pos_Y_ol;
+
+end
+
+Ay_ol = x_derv(1,:);
+
 %% Pre-Process Tire Stiffness Estimattion
 % Uses clean signals from TruckSim
 
 % truncate axle condition
 % 0 - DONT truncate axles
-% 1 - turncate axles
+% 1 - truncate axles
 trunc_axle = 0;
 
 % call estimator
-rls_cs = cornStiff(ts_data, trunc_axle);
+rls_cs = cornStiff(ts_data, Ay, Vy, x_derv, yaw_accel, hitch_accel, hitch_ol, trunc_axle);
 
 if trunc_axle == 0
 % extractfields
@@ -110,67 +201,12 @@ sa5_est = extractfield(rls_cs, 'sa5');
 elseif trunc_axle == 1
 % extractfields
 C1_est = extractfield(rls_cs, 'C1');
-C2_est = extractfield(rls_cs, 'C2');
-C3_est = extractfield(rls_cs, 'C3');
+C23_est = extractfield(rls_cs, 'C23');
+C45_est = extractfield(rls_cs, 'C45');
 
 sa1_est = extractfield(rls_cs, 'sa1');
-sa2_est = extractfield(rls_cs, 'sa2');
-sa3_est = extractfield(rls_cs, 'sa3');
-
-end
-%% Open-Loop Dynamic Model Simulation
-
-% initialize states
-Vy_est_ol = 0;
-yaw_rate_est_ol = 0;
-yaw_est_ol = 0;
-hitch_rate_est_ol = 0;
-hitch_est_ol = 0;
-
-% initialize position
-pos_X_ol = 0;
-pos_Y_ol = 0;
-
-x_init = [Vy_est_ol;
-          yaw_rate_est_ol;
-          yaw_est_ol;
-          hitch_rate_est_ol;
-          hitch_est_ol];
-
-x = x_init;
-
-% tire stiffness values
-CS = [ltm.A1_cs, ltm.A23_cs, ltm.A23_cs, ltm.A45_cs, ltm.A45_cs]; % truth?
-% CS = [4.536622535892314e5, 4.826699979105655e5,4.826699979105655e5,6.695921441312158e4,6.695921441312158e4];
-Vx_const = 19.4;
-
-for i = 1:length(t_sim)
-
-% input
-u = steer_ang(i);
-
-% update dynamics
-lat_ol(i) = latModel(steer_ang(i), Vx(i), hitch_est_ol(i), dt, CS);
-
-% simulate dynamics
-xd = lat_ol(i).sysc.A*x + lat_ol(i).sysc.B*u;
-
-% update states
-x = x + xd.*dt;
-
-% position integration
-pos_X_ol = pos_X_ol + (Vx(i)*cos(x(3)) - x(1)*sin(x(3)))*dt;
-pos_Y_ol = pos_Y_ol + (Vx(i)*sin(x(3)) + x(1)*cos(x(3)))*dt;
-
-% siphon variables
-Vy_est_ol(i+1,:) = x(1);
-yaw_rate_est_ol(i+1,:) = x(2);
-yaw_est_ol(i+1,:) = x(3);
-hitch_rate_est_ol(i+1,:) = x(4);
-hitch_est_ol(i+1,:) = x(5);
-
-pos_X_ol_est(i+1,:) = pos_X_ol;
-pos_Y_ol_est(i+1, :) = pos_Y_ol;
+sa23_est = extractfield(rls_cs, 'sa23');
+sa45_est = extractfield(rls_cs, 'sa45');
 
 end
 
@@ -179,65 +215,67 @@ end
 % measurment noise condition
 % 0 - no added noise
 % 1 - add measurement noise
-meas_noise = 0;
+meas_noise = 1;
 
 if meas_noise == 0
 
     % lateral acceleration (m/s^2)
-    Ay_meas = 9.81*ts_data.Ay;    
+    Ay_meas = Ay;    
     % yaw rate
     yaw_rate_meas = yaw_rate;
 
 elseif meas_noise == 1
     
     % lat accel measurement noise STD
-    sigma_Ay = 0.01;
+    sigma_Ay = 0.1;
     % yaw rate measurement noise STD
     sigma_yr = 0.01;
-
+    
+    for i = 1:length(t_sim)
     % lateral acceleration (m/s^2) 
-    Ay_meas = 9.81*ts_data.Ay + sigma_Ay*randn(1,length(t_sim));
+    Ay_meas(i) = Ay(i) + sigma_Ay*randn;
     % yaw rate
-    yaw_rate_meas = yaw_rate + sigma_yr*randn(1,length(t_sim));
+    yaw_rate_meas(i) = yaw_rate(i) + sigma_yr*randn;
+    end
 end
 
 %% Closed Loop Kalman Filter
 
 % PROCESS AND MEASUREMENT NOISE--------------------------------------------
 
-Q = [0.0001, 0, 0, 0, 0;
-     0, 0.1, 0, 0, 0;
-     0, 0, 0.1, 0, 0;
-     0, 0, 0, 0.1, 0;
-     0, 0, 0, 0, 0.001];
+Q = [0.5, 0, 0, 0, 0;
+     0, 0.5, 0, 0, 0;
+     0, 0, 1.2, 0, 0;
+     0, 0, 0, 1e-5, 0;
+     0, 0, 0, 0, 1e-5];
 
-R = [0.001, 0;
-     0, 0.001];
+R = [0.5, 0;
+     0, 0.01];
 
 % INITIALIZE---------------------------------------------------------------
 
 % initialize states
-Vy_est_cl = 0;
-yaw_rate_est_cl = 0;
-yaw_est_cl = 0;
-hitch_rate_est_cl = 0;
-hitch_est_cl = 0;
+Vy_cl = 0;
+yaw_rate_cl = 0;
+yaw_cl = 0;
+hitch_rate_cl = 0;
+hitch_cl = 0;
 
 % initialize position
 pos_X_cl = 0;
 pos_Y_cl = 0;
 
-x_init = [Vy_est_cl;
-          yaw_rate_est_cl;
-          yaw_est_cl;
-          hitch_rate_est_cl;
-          hitch_est_cl];
+x_init = [Vy_cl;
+          yaw_rate_cl;
+          yaw_cl;
+          hitch_rate_cl;
+          hitch_cl];
 
-P_init = [1, 0, 0, 0, 0;...
-          0, 1, 0, 0, 0;...
-          0, 0, 1, 0, 0;...
-          0, 0, 0, 1, 0;...
-          0, 0, 0, 0, 1];
+P_init = [10, 0, 0, 0, 0;...
+          0, 10, 0, 0, 0;...
+          0, 0, 10, 0, 0;...
+          0, 0, 0, 10, 0;...
+          0, 0, 0, 0, 10];
 
 x = x_init;
 P = P_init;
@@ -254,13 +292,10 @@ y = [Ay_meas(i);
      yaw_rate_meas(i)];
 
 % update dynamics
-lat_ol(i) = latModel(steer_ang(i), Vx(i), hitch_est_cl(i), dt, CS);
+lat_ol(i) = latModel(steer_ang(i), Vx(i), dt, CS);
 
 % simulate dynamics
 x = lat_ol(i).sysd.A*x + lat_ol(i).sysd.B*u;
-
-% update states
-% x = x + xd.*dt;
 
 % priori covariance
 P = lat_ol(i).sysd.A*P*lat_ol(i).sysd.A' + Q;
@@ -283,38 +318,45 @@ innov = (y - H*x);
 % state correction update
 x = x + K*(innov);
 
-% SIPHON VARIABLES---------------------------------------------------------
-
 % position integration
 pos_X_cl = pos_X_cl + (Vx(i)*cos(x(3)) - x(1)*sin(x(3)))*dt;
 pos_Y_cl = pos_Y_cl + (Vx(i)*sin(x(3)) + x(1)*cos(x(3)))*dt;
 
-% siphon variables
-Vy_est_cl(i+1,:) = x(1);
-yaw_rate_est_cl(i+1,:) = x(2);
-yaw_est_cl(i+1,:) = x(3);
-hitch_rate_est_cl(i+1,:) = x(4);
-hitch_est_cl(i+1,:) = x(5);
+% SIPHON VARIABLES---------------------------------------------------------
 
-pos_X_cl_est(i+1,:) = pos_X_cl;
-pos_Y_cl_est(i+1, :) = pos_Y_cl;
+% state estimates
+Vy_cl(i,:) = x(1);
+yaw_rate_cl(i,:) = x(2);
+yaw_cl(i,:) = x(3);
+hitch_rate_cl(i,:) = x(4);
+hitch_cl(i,:) = x(5);
+
+% position estimates
+pos_X_cl_est(i,:) = pos_X_cl;
+pos_Y_cl_est(i,:) = pos_Y_cl;
+
 
 end
 
 %% Interface
 
+% colors
+green = [0.4660 0.6740 0.1880];
+
 % display tire model
 disp_tire_model = 'false';
 % display tire pre-process tire siffness estimator
-disp_pre_ts = 'false';
+disp_pre_ts = 'true';
 % display true states
 disp_true_states = 'false';
 % dispaly open loop dynamics
-disp_ol = 'true';
+disp_ol = 'false';
 % display closed loop dynamics
-disp_cl = 'true';
-% dispaly position solition
+disp_cl = 'false';
+% disply position solution
 disp_pos = 'true';
+% display comparision plots
+disp_comp = 'true';
 
 % tire model---------------------------------------------------------------
 if strcmp(disp_tire_model, 'true') == 1
@@ -385,7 +427,7 @@ if strcmp(disp_pre_ts, 'true') == 1
     plot(t_sim, C2_est, DisplayName='C2')
     plot(t_sim, C3_est, DisplayName='C3')
     plot(t_sim, C4_est, DisplayName='C4')
-    plot(t_sim, C5_est, DisplayName='C4')
+    plot(t_sim, C5_est, DisplayName='C5')
     title('RLS Cornering Stiffness')
     xlabel('Time [s]')
     ylabel('N/rad')
@@ -399,8 +441,8 @@ if strcmp(disp_pre_ts, 'true') == 1
     hold on
     plot(t_sim, ts_data.Fy_A1, DisplayName='TS')
     plot(t_sim, ltm.A1_cs*sa1, DisplayName='Sim Truth')
-%     plot(t_sim, C1_est(end)*sa1_est, DisplayName='RLS')
-    plot(t_sim, ltm.A1_cs*sa1_est, DisplayName='RLS')
+    plot(t_sim, C1_est(end).*sa1_est, DisplayName='RLS')
+%     plot(t_sim, ltm.A1_cs*sa1_est, DisplayName='RLS')
     hold off
     title('Fy at Axle 1')
     xlabel('Time [s]')
@@ -414,8 +456,8 @@ if strcmp(disp_pre_ts, 'true') == 1
     hold on
     plot(t_sim, ts_data.Fy_A2, DisplayName='TS')
     plot(t_sim, ltm.A23_cs*sa2, DisplayName='Sim Truth')
-%     plot(t_sim, C2_est(end)*sa2_est, DisplayName='RLS')
-    plot(t_sim, ltm.A23_cs*sa2_est, DisplayName='RLS')
+    plot(t_sim, C2_est(end).*sa2_est, DisplayName='RLS')
+%     plot(t_sim, ltm.A23_cs*sa2_est, DisplayName='RLS')
     hold off
     title('Fy at Axle 2')
     xlabel('Time [s]')
@@ -429,8 +471,8 @@ if strcmp(disp_pre_ts, 'true') == 1
     hold on
     plot(t_sim, ts_data.Fy_A3, DisplayName='TS')
     plot(t_sim, ltm.A23_cs*sa3, DisplayName='Sim Truth')
-%     plot(t_sim, C3_est(end)*sa3_est, DisplayName='RLS')
-    plot(t_sim, ltm.A23_cs*sa3_est, DisplayName='RLS')
+    plot(t_sim, C3_est(end).*sa3_est, DisplayName='RLS')
+%     plot(t_sim, ltm.A23_cs*sa3_est, DisplayName='RLS')
     hold off
     title('Fy at Axle 3')
     xlabel('Time [s]')
@@ -444,8 +486,8 @@ if strcmp(disp_pre_ts, 'true') == 1
     hold on
     plot(t_sim, ts_data.Fy_A4, DisplayName='TS')
     plot(t_sim, ltm.A45_cs*sa4, DisplayName='Sim Truth')
-%     plot(t_sim, C4_est(end)*sa4_est, DisplayName='RLS')
-    plot(t_sim, ltm.A45_cs*sa4_est, DisplayName='RLS')
+    plot(t_sim, C4_est(end).*sa4_est, DisplayName='RLS')
+%     plot(t_sim, ltm.A45_cs*sa4_est, DisplayName='RLS')
     hold off
     title('Fy at Axle 4')
     xlabel('Time [s]')
@@ -458,8 +500,8 @@ if strcmp(disp_pre_ts, 'true') == 1
     hold on
     plot(t_sim, ts_data.Fy_A5, DisplayName='TS')
     plot(t_sim, ltm.A45_cs*sa5, DisplayName='Sim Truth')
-%     plot(t_sim, C5_est(end)*sa5_est, DisplayName='RLS')
-    plot(t_sim, ltm.A45_cs*sa5_est, DisplayName='RLS')
+    plot(t_sim, C5_est(end).*sa5_est, DisplayName='RLS')
+%     plot(t_sim, ltm.A45_cs*sa5_est, DisplayName='RLS')
     hold off
     title('Fy at Axle 5')
     xlabel('Time [s]')
@@ -468,13 +510,15 @@ if strcmp(disp_pre_ts, 'true') == 1
     grid
     set(gcf, 'color','w')
 
-    % truncated axles
+    % --- truncated axles ------
     elseif trunc_axle == 1
+
+    % stiffness estimation
     figure
     hold on
     plot(t_sim, C1_est, DisplayName='C1')
-    plot(t_sim, C2_est, DisplayName='C2')
-    plot(t_sim, C3_est, DisplayName='C3')
+    plot(t_sim, C23_est, DisplayName='C23')
+    plot(t_sim, C45_est, DisplayName='C45')
     title('RLS Cornering Stiffness')
     xlabel('Time [s]')
     ylabel('N/rad')
@@ -483,6 +527,51 @@ if strcmp(disp_pre_ts, 'true') == 1
     grid
     set(gcf, 'color','w')
 
+    % Lateral Force comparison (Fy1)
+    figure
+    hold on
+    plot(t_sim, ts_data.Fy_A1, DisplayName='TS')
+    plot(t_sim, ltm.A1_cs*sa1, DisplayName='Sim Truth')
+    plot(t_sim, C1_est(end).*sa1_est, DisplayName='RLS')
+%     plot(t_sim, ltm.A1_cs*sa1_est, DisplayName='RLS')
+    hold off
+    title('Fy at Axle 1')
+    xlabel('Time [s]')
+    ylabel('N')
+    legend(Location='best')
+    grid
+    set(gcf, 'color','w')
+    
+    % Lateral Force comparison (Fy2)
+    figure
+    hold on
+    plot(t_sim, ts_data.Fy_A2, DisplayName='TS')
+    plot(t_sim, ltm.A23_cs*sa23, DisplayName='Sim Truth')
+    plot(t_sim, C23_est(end).*sa23_est, DisplayName='RLS')
+%     plot(t_sim, ltm.A23_cs*sa2_est, DisplayName='RLS')
+    hold off
+    title('Fy at Axle 2')
+    xlabel('Time [s]')
+    ylabel('N')
+    legend(Location='best')
+    grid
+    set(gcf, 'color','w')
+
+    % Lateral Force comparison
+    figure
+    hold on
+    plot(t_sim, ts_data.Fy_A4, DisplayName='TS')
+    plot(t_sim, ltm.A45_cs*sa45, DisplayName='Sim Truth')
+    plot(t_sim, C45_est(end).*sa45_est, DisplayName='RLS')
+%     plot(t_sim, ltm.A45_cs*sa4_est, DisplayName='RLS')
+    hold off
+    title('Fy at Axle 4')
+    xlabel('Time [s]')
+    ylabel('N')
+    legend(Location='best')
+    grid
+    set(gcf, 'color','w')
+    
     end
 
 elseif strcmp(disp_pre_ts, 'false') == 1
@@ -534,7 +623,7 @@ if strcmp(disp_ol, 'true') == 1
     subplot(5,1,1)
     hold on
     plot(t_sim, Vy, DisplayName='TruckSim')
-    plot(t_sim, Vy_est_ol(1:end-1), DisplayName='Model')
+    plot(t_sim, Vy_ol, DisplayName='Model')
     hold off
     title('Tractor Lateral Velocity $V_{y}$', 'Interpreter','latex')
     ylabel('m/s')
@@ -546,7 +635,7 @@ if strcmp(disp_ol, 'true') == 1
     subplot(5,1,2)
     hold on
     plot(t_sim, rad2deg(yaw_rate), DisplayName='TruckSim')
-    plot(t_sim, rad2deg(yaw_rate_est_ol(1:end-1)), DisplayName='Model')
+    plot(t_sim, rad2deg(yaw_rate_ol), DisplayName='Model')
     hold off
     title('Yaw Rate $\dot{\psi}$', 'Interpreter', 'latex')
     ylabel('deg/s')
@@ -557,7 +646,7 @@ if strcmp(disp_ol, 'true') == 1
     subplot(5,1,3)
     hold on
     plot(t_sim, rad2deg(yaw), DisplayName='TruckSim')
-    plot(t_sim, rad2deg(yaw_est_ol(1:end-1)), DisplayName='Model')
+    plot(t_sim, rad2deg(yaw_ol), DisplayName='Model')
     hold off
     title('Yaw $\psi$', 'Interpreter','latex')
     ylabel('deg')
@@ -568,7 +657,7 @@ if strcmp(disp_ol, 'true') == 1
     subplot(5,1,4)
     hold on
     plot(t_sim, rad2deg(hitch_rate), DisplayName='hitch rate')
-    plot(t_sim, rad2deg(hitch_rate_est_ol(1:end-1)), DisplayName='hitch rate')
+    plot(t_sim, rad2deg(hitch_rate_ol), DisplayName='hitch rate')
     hold off
     title('Hitch Rate $\dot{\gamma}$', 'Interpreter','latex')
     ylabel('deg/s')
@@ -579,7 +668,7 @@ if strcmp(disp_ol, 'true') == 1
     subplot(5,1,5)
     hold on
     plot(t_sim, rad2deg(hitch), DisplayName='hitch')
-    plot(t_sim, rad2deg(hitch_est_ol(1:end-1)), DisplayName='hitch')
+    plot(t_sim, rad2deg(hitch_ol), DisplayName='hitch')
     hold off
     title('Hitch $\gamma$', 'Interpreter','latex')
     xlabel('Time [s]')
@@ -593,12 +682,13 @@ end
 
 % closed loop--------------------------------------------------------------
 if strcmp(disp_cl, 'true') == 1
-
+    
+    % closed loop KF plots
     figure
     subplot(5,1,1)
     hold on
     plot(t_sim, Vy, DisplayName='TruckSim')
-    plot(t_sim, Vy_est_cl(1:end-1), DisplayName='Model')
+    plot(t_sim, Vy_cl, DisplayName='KF')
     hold off
     title('Tractor Lateral Velocity $V_{y}$', 'Interpreter','latex')
     ylabel('m/s')
@@ -610,7 +700,7 @@ if strcmp(disp_cl, 'true') == 1
     subplot(5,1,2)
     hold on
     plot(t_sim, rad2deg(yaw_rate), DisplayName='TruckSim')
-    plot(t_sim, rad2deg(yaw_rate_est_cl(1:end-1)), DisplayName='Model')
+    plot(t_sim, rad2deg(yaw_rate_cl), DisplayName='KF')
     hold off
     title('Yaw Rate $\dot{\psi}$', 'Interpreter', 'latex')
     ylabel('deg/s')
@@ -621,7 +711,7 @@ if strcmp(disp_cl, 'true') == 1
     subplot(5,1,3)
     hold on
     plot(t_sim, rad2deg(yaw), DisplayName='TruckSim')
-    plot(t_sim, rad2deg(yaw_est_cl(1:end-1)), DisplayName='Model')
+    plot(t_sim, rad2deg(yaw_cl), DisplayName='KF')
     hold off
     title('Yaw $\psi$', 'Interpreter','latex')
     ylabel('deg')
@@ -632,7 +722,7 @@ if strcmp(disp_cl, 'true') == 1
     subplot(5,1,4)
     hold on
     plot(t_sim, rad2deg(hitch_rate), DisplayName='hitch rate')
-    plot(t_sim, rad2deg(hitch_rate_est_cl(1:end-1)), DisplayName='hitch rate')
+    plot(t_sim, rad2deg(hitch_rate_cl), DisplayName='hitch rate')
     hold off
     title('Hitch Rate $\dot{\gamma}$', 'Interpreter','latex')
     ylabel('deg/s')
@@ -643,7 +733,7 @@ if strcmp(disp_cl, 'true') == 1
     subplot(5,1,5)
     hold on
     plot(t_sim, rad2deg(hitch), DisplayName='hitch')
-    plot(t_sim, rad2deg(hitch_est_cl(1:end-1)), DisplayName='hitch')
+    plot(t_sim, rad2deg(hitch_cl), DisplayName='hitch')
     hold off
     title('Hitch $\gamma$', 'Interpreter','latex')
     xlabel('Time [s]')
@@ -655,7 +745,8 @@ if strcmp(disp_cl, 'true') == 1
 elseif strcmp(disp_cl, 'false') == 1
 end
 
-if strcmp(disp_cl, 'true') == 1
+% position solutions-------------------------------------------------------
+if strcmp(disp_pos, 'true') == 1
     
     % position solution comparison
     figure
@@ -664,12 +755,95 @@ if strcmp(disp_cl, 'true') == 1
     plot(pos_X_ol_est, pos_Y_ol_est, DisplayName='Model')
     plot(pos_X_cl_est, pos_Y_cl_est, DisplayName='KF')
     hold off
-    title('Position Solutions')
-    xlabel('Global X')
-    ylabel('Global Y')
-    legend(Location='best')
+    title('Position Solution')
+    xlabel('Global X [m]')
+    ylabel('Global Y [m]')
+    leg = legend;
+    set(leg,'Interpreter','latex');
     grid
     set(gcf, 'color','w')
 
-elseif strcmp(disp_cl, 'false') == 1
+elseif strcmp(disp_pos, 'false') == 1
 end
+
+% comparision plots--------------------------------------------------------
+if strcmp(disp_comp, 'true') == 1
+    
+    % yaw
+    figure
+    hold on
+    plot(t_sim, rad2deg(yaw_ol), DisplayName='Model')
+    plot(t_sim, rad2deg(yaw_cl), DisplayName='KF')
+    plot(t_sim, rad2deg(yaw), color = green, DisplayName='TruckSim')
+    hold off
+    title('Yaw $\psi$', 'Interpreter','latex')
+    xlabel('Time [s]','Interpreter','latex')
+    ylabel('$Deg$','Interpreter','latex')
+    leg = legend;
+    set(leg,'Interpreter','latex');
+    grid
+    set(gcf, 'color', 'w')
+
+    % yaw rate
+    figure
+    hold on
+    plot(t_sim, rad2deg(yaw_rate_ol), DisplayName='Model')
+    plot(t_sim, rad2deg(yaw_rate_cl), DisplayName='KF')
+    plot(t_sim, rad2deg(yaw_rate), color = green, DisplayName='TruckSim')
+    hold off
+    title('Yaw Rate $\dot{\psi}$', 'Interpreter','latex')
+    xlabel('Time [s]','Interpreter','latex')
+    ylabel('$Deg/s$','Interpreter','latex')
+    leg = legend;
+    set(leg,'Interpreter','latex');
+    grid
+    set(gcf, 'color', 'w')
+
+    % hitch
+    figure
+    hold on
+    plot(t_sim, rad2deg(hitch_ol), DisplayName='Model')
+    plot(t_sim, rad2deg(hitch_cl), DisplayName='KF')
+    plot(t_sim, rad2deg(hitch), color = green, DisplayName='TruckSim')
+    hold off
+    title('Hitch $\gamma$', 'Interpreter','latex')
+    xlabel('Time [s]','Interpreter','latex')
+    ylabel('$Deg$','Interpreter','latex')
+    leg = legend;
+    set(leg,'Interpreter','latex');
+    grid
+    set(gcf, 'color', 'w')
+
+    % hitch rate
+    figure
+    hold on
+    plot(t_sim, rad2deg(hitch_rate_ol), DisplayName='Model')
+    plot(t_sim, rad2deg(hitch_rate_cl), DisplayName='KF')
+    plot(t_sim, rad2deg(hitch_rate), color = green, DisplayName='TruckSim')
+    hold off
+    title('Hitch Rate $\dot{\gamma}$', 'Interpreter','latex')
+    xlabel('Time [s]','Interpreter','latex')
+    ylabel('$Deg/s$','Interpreter','latex')
+    leg = legend;
+    set(leg,'Interpreter','latex');
+    grid
+    set(gcf, 'color', 'w')
+
+    % lateral acceleration
+    figure
+    hold on
+    plot(t_sim, yaw_rate_ol.*Vx)
+    plot(t_sim, yaw_rate_cl.*Vx)
+    plot(t_sim, Ay, color = green)
+    hold off
+    legend('Model $\dot{\psi}V_{x}$', 'KF $\dot{\psi}V_{x}$', 'TruckSim',...
+           'Interpreter', 'latex')
+    title('Lateral Acceleration $A_{y}$', 'Interpreter','latex')
+    xlabel('Time [s]','Interpreter','latex')
+    ylabel('$m/s^{2}$','Interpreter','latex')
+    grid
+    set(gcf, 'color', 'w')
+
+elseif strcmp(disp_comp, 'false') == 1
+end
+

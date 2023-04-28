@@ -1,5 +1,5 @@
 %% Open-Loop lat_oleral Dynamic Model (i)for Articulat_ol_oled Tractor Trailer System
-function lat_ol = latModel(steer_ang, Vx, hitch, dt, CS)
+function lat_ol = latModel(steer_ang, Vx, dt, CS)
 
 % Author: Tahn Thawainin, AU GAVLAB
 %
@@ -102,10 +102,10 @@ k45 = -vp.f1*C4 - vp.f2*C5;
 
 % stiffness matrix
 lat_ol.K = [k11, k12, 0, k14, k15;
-         k21, k22, 0, k24, k25;
-         0, 1, 0, 0, 0;
-         k41, k42, 0, k44, k45;
-         0, 0, 0, 1, 0];
+            k21, k22, 0, k24, k25;
+            0, 1, 0, 0, 0;
+            k41, k42, 0, k44, k45;
+            0, 0, 0, 1, 0];
 
 %% Forcing Matrix
 
