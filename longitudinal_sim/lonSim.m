@@ -93,12 +93,12 @@ engine_speed = extractfield(sim, 'engine_speed');
 %% Save Data Sets
 
 % save data
-save_data = 'false';
+save_data = 'true';
 
 if strcmp(save_data, 'true') == 1
     
     % file name
-    filename = 'u5a_p_zg_ct1.mat';
+    filename = 'optimal_test1.mat';
 
     % save file
     save(filename, 'vp','pro','sim')

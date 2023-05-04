@@ -17,10 +17,10 @@ function pro = lonProc()
 %% Simulation Specs
 
 % sample rate
-pro.dt = 0.01;
+pro.dt = 0.025;
 
 % run time
-pro.t_run = 180;
+pro.t_run = 2;
 
 % simulation time vector
 pro.t_sim = 0:pro.dt:pro.t_run;
@@ -29,10 +29,10 @@ pro.t_sim = 0:pro.dt:pro.t_run;
 pro.pos_init = 0;
 
 % initial velocity
-pro.v_init = 0;
+pro.v_init = 19.44;
 
 % desired velocity
-pro.v_des = 31;
+pro.v_des = 19.44;
 
 %% Vehicle Parameters
 vp = vehParams();
@@ -54,7 +54,7 @@ pro.D = 0.5*pro.p*vp.cd*vp.front_area;
 % 0) constant grade
 % 1) sinusoidal grade
 % 2) custom
-pro.grade_status = 1;
+pro.grade_status = 0;
 
 if pro.grade_status == 0
     
